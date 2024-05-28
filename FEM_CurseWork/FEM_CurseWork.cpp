@@ -9,7 +9,15 @@
 #include <set>
 #include <vector>
 
-//ПРОГРАММА РЕАЛИЗОВАНА
+//ПРОГРАММА НЕ РЕАЛИЗОВАНА
+/*
+ТРЕБУЕТСЯ РЕАЛИЗОВАТЬ:
+- Ввод краевых условий по времени и ввод tj
+- Реализовать подсчёт производных в tj
+- Реализовать подсчёт q2 с помощью трёхслойной схемы
+- Реализовать подсчёт остальных qj с помощью четырёхслойной схемы
+- Корректировать итоговый вывод
+*/
 
 using namespace std;
 // Реализация функции sign
@@ -750,7 +758,7 @@ void SumVector(double*& FirstVec, double* SecondVec, int n) {
 void MultVectorConstant(double*& FirstVec, double Constant, int n) {
 	for (int i = 0; i < n; i++) FirstVec[i] *= Constant;
 }
-void LocalCalcVectorFEK(int IndexFE) { // Не реализовано
+void LocalCalcVectorFEK(int IndexFE) { // реализовано
 	if (FECount == NULL || NodesCount == NULL)
 		throw "Ошибка: Нельзя посчитать вектор правой части без заданной области";
 	//Создаём функцию по которой интегрируем
