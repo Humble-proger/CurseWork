@@ -9,16 +9,6 @@
 #include <set>
 #include <vector>
 
-//ПРОГРАММА НЕ РЕАЛИЗОВАНА
-/*
-ТРЕБУЕТСЯ РЕАЛИЗОВАТЬ:
-- Ввод краевых условий по времени и ввод tj
-- Реализовать подсчёт производных в tj
-- Реализовать подсчёт q2 с помощью трёхслойной схемы
-- Реализовать подсчёт остальных qj с помощью четырёхслойной схемы
-- Корректировать итоговый вывод
-*/
-
 using namespace std;
 // Реализация функции sign
 template <typename T> int sign(T val) {
@@ -55,39 +45,61 @@ int NodesCountR;
 int GLen, MLen; //Размерность массивов G, M
 double alpha[3]; //Элементы альфа которые участвуют при счёте Якоби
 double Myu[6]; //Коэффициенты Мю которые участвуют после решения Крамера
-double* Mk,
+double* MkXi,
+	  * MkSig,
       * Gk;
 double* bk;
 #pragma endregion
+#pragma region Сетка по времени
+
+int num_t; // Количество узлов в сетке
+vector<double> tj; //Массив с значениями tj
+double koef_t; // Коэффициент растяжения по оси времени
+
+#pragma endregion
+#pragma region Вектор решений или вектор qj и константы
+vector<vector<double>> qj; // Размер данного вектора будет ограничен до 4 необходимых. Чтобы меньше тратить памяти.
+
+#pragma endregion
+
 
 #pragma region Прототипы
 #pragma region Прототипы Гаусса
+double Gauss2rod(function<double(double, double, tuple<int, int, int>, double)> Ifun, tuple<int, int, int> FuncIndex, double time);
 double Gauss2rod(function<double(double, double, tuple<int, int, int>)> Ifun, tuple<int, int, int> FuncIndex);
 #pragma endregion
 #pragma region Прототипы параметров уравнения
 double lambda(double z);
-double RightFunction(double r, double z);
+double RightFunction(double r, double z, double time);
 #pragma endregion
 #pragma region Прототипы краевых условий
-double ug(int IndexFunc, double r, double z);
-double teta(int IndexFunc, double r, double z);
+double ug(int IndexFunc, double r, double z, double t);
+double teta(int IndexFunc, double r, double z, double t);
 double beta();
-double u_beta(int IndexFunc, double r, double z);
+double sigma(double r, double z);
+double xi_d(double r, double z);
+double u_beta(int IndexFunc, double r, double z, double t);
+double u0(double r, double z);
+double u1(double r, double z);
+double u2(double r, double z);
 void EnterBoundCondit();
 int GetStepEndEl(int i);
 int GetStartPoint(int i);
 bool FindInd(int i);
-void ConsiderBoundConditFirstType(int node_num);
-void ConsiderBoundConditSecType(int num_edge);
+void ConsiderBoundConditFirstType(int node_num, double t);
+void ConsiderBoundConditSecType(int num_edge, double t);
 void AddLocalMartBound_3(int num_edge, vector<vector<double>> matr);
 void AddLocalVecBound(int bound_condit, int num_edge, vector<double> vec);
-void ConsiderBoundConditThirdType(int num_edge);
+void ConsiderBoundConditThirdType(int num_edge, double t);
 void BuildBoundMatrices();
 void BoundCondit();
-void ConsiderBoundCondit();
+void ConsiderBoundCondit(double t);
 #pragma endregion
 #pragma region Прототипы загрузки и обработки сетки
 void LoadNet(bool debag = false); // Загрузка сетки
+void LoadTNet();
+void InitQJ();
+void InitFirstQ();
 tuple<double, double> GetCordIK(int i, int IndexFE);
 #pragma endregion
 #pragma region Прототипы загрузки базисных функций и их производных
@@ -105,11 +117,9 @@ void CalcVecMyu(unsigned int indexFE);
 void LocalCalcGK(int IndexFE);
 double RPsyEta(double Psy, double Eta, int IndexFe); // r с заменой меременной
 double ZPsyEta(double Psy, double Eta, int IndexFE);
-void LocalCalcMK(int IndexFE);
-void LocalCalcVectorFEK(int IndexFE);
+void LocalCalcVectorFEK(int IndexFE, double time);
 void SumVector(double* &FirstVec, double *SecondVec, int n);
 void MultVectorConstant(double*& FirstVec, double Constant, int n);
-void GlobalA_F(bool debag = false);
 void InitVectors();
 
 #pragma endregion
@@ -279,6 +289,44 @@ tuple<double, double> GetCordIK(int i, int IndexFE) {
 	int NumGlobalFunc = numfe[i][IndexFE];
 	return make_tuple(rz[0][NumGlobalFunc], rz[1][NumGlobalFunc]);
 }
+void LoadTNet() {
+	ifstream FileT("time.txt");
+	if (!FileT.is_open()) {
+		throw "Файл time.txt не открылся";
+	}
+	double max_t, min_t;
+	FileT >> min_t >> max_t >> koef_t >> num_t;
+	FileT.close();
+	if (koef_t <= 0 || num_t <= 0) {
+		throw "Сетка по времени заданна не верно";
+	}
+	tj.resize(num_t);
+	if (abs(koef_t - 1) < 1e-15) {
+		double h0 = (max_t - min_t) / (num_t - 1);
+		for (int i = 0; i < num_t; i++) {
+			tj[i] = min_t + h0 * i;
+		}
+	}
+	else {
+		double h0 = (max_t - min_t) * (koef_t - 1) / (pow(koef_t, num_t - 1) - 1);
+		for (int i = 0; i < num_t; i++) {
+			tj[i] = min_t + h0 * (pow(koef_r, i) - 1) / (koef_t - 1);
+		}
+	}
+}
+void InitQJ() {
+	qj.resize(3);
+	for (int i = 0; i < 3; i++) {
+		qj[i].resize(NodesCount, 0);
+	}
+}
+void InitFirstQ() {
+	for (int i = 0; i < NodesCount; i++) {
+		qj[0][i] = u0(rz[0][i], rz[1][i]);
+		qj[1][i] = u1(rz[0][i], rz[1][i]);
+		//qj[2][i] = u2(rz[0][i], rz[1][i]);
+	}
+}
 #pragma endregion
 #pragma region Реализация загрузок базисных функций и и производных
 double FiniteFunc(int i, double var) {
@@ -326,52 +374,40 @@ void InitDРerivativeBaseFunction() {
 #pragma endregion
 
 #pragma region Реализация функций краевых условий
-double ug(int IndexFunc, double r, double z) {
-	return sin(r*z);
+double ug(int IndexFunc, double r, double z, double t) {
+	return exp(3 * t);
 }
-double teta(int IndexFunc, double r, double z) {
+double teta(int IndexFunc, double r, double z, double t) {
 	if (IndexFunc == 0) {
-		for (int i = 0; i < 4; i++) {
-			if (choise[i] != 2) continue;
-			return cos(r*z) * (5*r - z) / sqrt(26);
-		}
-		//return (exp(r * z) * z * normal[i * 2] + exp(r * z) * r * normal[i * 2 + 1]);
+		return (-2 * r) / sqrt(26);
 		
 	}
 	else {
-		bool first_condit = 1;
-		for (int i = 0; i < 4; i++) {
-			if (choise[i] != 2) continue;
-			if (first_condit) {
-				first_condit = 0;
-				continue;
-				
-			}
-			return cos(r * z) * (5 * r - z) / sqrt(26);
-		}
-			//return (exp(r * z) * z * normal[i * 2] + exp(r * z) * r * normal[i * 2 + 1]);
+		return (-2 * r) / sqrt(26);
 	}
 }
 double beta() {
 	return 1;
 }
-double u_beta(int IndexFunc, double r, double z) {
+
+
+double u0(double r, double z) {
+	return exp(3 * tj[0]);
+}
+
+double u1(double r, double z) {
+	return exp(3 * tj[1]);
+}
+double u2(double r, double z) {
+	return exp(3 * tj[2]);
+}
+
+double u_beta(int IndexFunc, double r, double z, double t) {
 	if (IndexFunc == 0) {
-		for (int i = 0; i < 4; i++) {
-			if (choise[i] != 3) continue;
-			return cos(r*z) * (9*z - r)/sqrt(82) + sin(r * z);
-		}
+		return pow(r, 2) + t + 18 * r / sqrt(82);
 	}
 	else {
-		bool first_condit = 1;
-		for (int i = 0; i < 4; i++) {
-			if (choise[i] != 3) continue;
-			if (first_condit) {
-				first_condit = 0;
-				continue;
-			}
-			return cos(r*z) * (2*r - 10*z)/sqrt(104) + sin(r*z);
-		}
+		return pow(r, 2) + t - 10 * r / sqrt(26);
 	}
 }
 void EnterBoundCondit() { // ввод краевых условий
@@ -424,10 +460,10 @@ bool FindInd(int i) {
 	}
 	return false;
 }
-void ConsiderBoundConditFirstType(int node_num) { // учет краевых условий первого типа
+void ConsiderBoundConditFirstType(int node_num, double t) { // учет краевых условий первого типа
 	double _r, _z;
 	_r = rz[0][edge[0][node_num][0]], _z = rz[1][edge[0][node_num][0]];
-	b[edge[0][node_num][0]] = ug(edge[0][node_num][1], _r, _z);
+	b[edge[0][node_num][0]] = ug(edge[0][node_num][1], _r, _z, t);
 	di[edge[0][node_num][0]] = 1;
 	for (int i = ig[edge[0][node_num][0]]; i < ig[edge[0][node_num][0] + 1]; i++) {
 		int _i = jg[i];
@@ -453,7 +489,7 @@ void ConsiderBoundConditFirstType(int node_num) { // учет краевых у�
 	}
 }
 
-void ConsiderBoundConditSecType(int num_edge) { // учет краевых условий второго типа
+void ConsiderBoundConditSecType(int num_edge, double t) { // учет краевых условий второго типа
 	vector<double> _r(3), _z(3);
 	_r[0] = rz[0][edge[1][num_edge][0]], _z[0] = rz[1][edge[1][num_edge][0]];
 	_r[1] = rz[0][edge[1][num_edge][1]], _z[1] = rz[1][edge[1][num_edge][1]];
@@ -461,9 +497,9 @@ void ConsiderBoundConditSecType(int num_edge) { // учет краевых ус�
 	double h = sqrt(pow(_r[0] - _r[2], 2) + pow(_z[0] - _z[2], 2));
 	vector<double> b_s2(3, 0);
 	vector<double> _theta(3);
-	_theta[0] = teta(edge[1][num_edge][3], _r[0], _z[0]);
-	_theta[1] = teta(edge[1][num_edge][3], _r[1], _z[1]);
-	_theta[2] = teta(edge[1][num_edge][3], _r[2], _z[2]);
+	_theta[0] = teta(edge[1][num_edge][3], _r[0], _z[0], t);
+	_theta[1] = teta(edge[1][num_edge][3], _r[1], _z[1], t);
+	_theta[2] = teta(edge[1][num_edge][3], _r[2], _z[2], t);
 	for (int i = 0; i < 3; i++) {
 		for (int j = 0; j < 3; j++) {
 			b_s2[i] += (A_1[i][j] * _r[0] + A_2[i][j] * _r[1] + A_3[i][j] * _r[2]) * _theta[j];
@@ -496,7 +532,7 @@ void AddLocalVecBound(int bound_condit, int num_edge, vector<double> vec) { // �
 		b[edge[bound_condit][num_edge][i]] += vec[i];
 	}
 }
-void ConsiderBoundConditThirdType(int num_edge) { // учет краевых условий третьего типа
+void ConsiderBoundConditThirdType(int num_edge, double t) { // учет краевых условий третьего типа
 	vector<double> _r(3), _z(3);
 	_r[0] = rz[0][edge[2][num_edge][0]], _z[0] = rz[1][edge[2][num_edge][0]];
 	_r[1] = rz[0][edge[2][num_edge][1]], _z[1] = rz[1][edge[2][num_edge][1]];
@@ -508,9 +544,9 @@ void ConsiderBoundConditThirdType(int num_edge) { // учет краевых у�
 	_A[2].resize(3);
 	vector<double> b_s3(3, 0);
 	vector<double> _u_beta(3);
-	_u_beta[0] = u_beta(edge[2][num_edge][3], _r[0], _z[0]);
-	_u_beta[1] = u_beta(edge[2][num_edge][3], _r[1], _z[1]);
-	_u_beta[2] = u_beta(edge[2][num_edge][3], _r[2], _z[2]);
+	_u_beta[0] = u_beta(edge[2][num_edge][3], _r[0], _z[0], t);
+	_u_beta[1] = u_beta(edge[2][num_edge][3], _r[1], _z[1], t);
+	_u_beta[2] = u_beta(edge[2][num_edge][3], _r[2], _z[2], t);
 	for (int i = 0; i < 3; i++) {
 		for (int j = i; j < 3; j++) {
 			_A[j][i] = h * beta() / double(420) * (A_1[j][i] * _r[0] + A_2[j][i] * _r[1] + A_3[j][i] * _r[2]);
@@ -579,15 +615,15 @@ void BoundCondit() { // краевые условия
 		}
 	}
 }
-void ConsiderBoundCondit() { // учет всех краевых
+void ConsiderBoundCondit(double t) { // учет всех краевых
 	for (int i = 0; i < edge[2].size(); i++) { // учет третьих краевых
-		ConsiderBoundConditThirdType(i);
+		ConsiderBoundConditThirdType(i, t);
 	}
 	for (int i = 0; i < edge[1].size(); i++) { // учет вторых краевых
-		ConsiderBoundConditSecType(i);
+		ConsiderBoundConditSecType(i, t);
 	}
 	for (int i = 0; i < edge[0].size(); i++) { // учет первых краевых(не в верхнем цикле, тк должен быть в самом конце)
-		ConsiderBoundConditFirstType(i);
+		ConsiderBoundConditFirstType(i, t);
 	}
 }
 
@@ -597,8 +633,14 @@ void ConsiderBoundCondit() { // учет всех краевых
 double lambda(double z) {
 	return 1;
 }
-double RightFunction(double r, double z) {
-	return  sin(r*z) * (pow(r, 2) + 1/pow(r, 2) + z) - z * cos(r*z) / r;
+double RightFunction(double r, double z, double time) {
+	return 21 * exp(3 * time);
+}
+double sigma(double r, double z) {
+	return 1;
+}
+double xi_d(double r, double z) {
+	return 2;
 }
 #pragma endregion
 #pragma region Реализация построений Альфа и Мю
@@ -647,7 +689,7 @@ void CalcVecMyu(unsigned int indexFE) {
 #pragma endregion
 
 #pragma region Реализация Гаусса
-double Gauss2rod(function<double(double, double, tuple<int, int, int>)> Ifun, tuple<int, int, int> FuncIndex) {
+double Gauss2rod(function<double(double, double, tuple<int, int, int>, double)> Ifun, tuple<int, int, int> FuncIndex, double time) {
 	// Расчёт констант
 	double Tau[3]; Tau[0] = 8.0 / 9; Tau[1] = Tau[2] = 5.0 / 9;
 	double t[3] = {0, 0.77459666924148337, -0.77459666924148337 };
@@ -657,10 +699,25 @@ double Gauss2rod(function<double(double, double, tuple<int, int, int>)> Ifun, tu
 		double PsyI = (1 + t[i]) / 2;
 		for (int j = 0; j < 3; j++) {
 			double EtaJ = (1 + t[j]) / 2;
-			result += Tau[i] * Tau[j] * Ifun(PsyI, EtaJ, FuncIndex);
+			result += Tau[i] * Tau[j] * Ifun(PsyI, EtaJ, FuncIndex, time);
 		}
 	}
 	return result/double(4);
+}
+double Gauss2rod(function<double(double, double, tuple<int, int, int>)> Ifun, tuple<int, int, int> FuncIndex) {
+	// Расчёт констант
+	double Tau[3]; Tau[0] = 8.0 / 9; Tau[1] = Tau[2] = 5.0 / 9;
+	double t[3] = { 0, 0.77459666924148337, -0.77459666924148337 };
+	double result = 0.0;
+	//Расчёт метода Гаусса
+	for (int i = 0; i < 3; i++) {
+		double PsyI = (1 + t[i]) / 2;
+		for (int j = 0; j < 3; j++) {
+			double EtaJ = (1 + t[j]) / 2;
+			result += Tau[i] * Tau[j] * Ifun(PsyI, EtaJ, FuncIndex);
+		}
+	}
+	return result / double(4);
 }
 #pragma endregion
 
@@ -716,17 +773,29 @@ void add_local_to_global(int IndexFE, int debag = false)//занесение л�
 		}
 	}
 }
-void LocalCalcMK(int IndexFE) {
+void LocalCalcMKXi(int IndexFE) {
 	if (FECount == NULL || NodesCount == NULL)
 		throw "Ошибка: Нельзя посчитать локальную матрицу не зная область";
 	//Создаём функцию по которой интегрируем
-	function<double(double, double, tuple<int, int, int> Index)> IntegratedFunction = [](double Psy, double Eta, tuple<int, int, int> IndexFunc) { return lambda(ZPsyEta(Psy, Eta, get<2>(IndexFunc))) * W[get<0>(IndexFunc)](Psy, Eta) * W[get<1>(IndexFunc)](Psy, Eta) * (alpha[0] + alpha[1] * Psy + alpha[2] * Eta) / RPsyEta(Psy, Eta, get<2>(IndexFunc)); };
+	function<double(double, double, tuple<int, int, int> Index)> IntegratedFunction = [](double Psy, double Eta, tuple<int, int, int> IndexFunc) { return RPsyEta(Psy, Eta, get<2>(IndexFunc)) * xi_d(RPsyEta(Psy, Eta, get<2>(IndexFunc)), ZPsyEta(Psy, Eta, get<2>(IndexFunc))) * W[get<0>(IndexFunc)](Psy, Eta) * W[get<1>(IndexFunc)](Psy, Eta) * (alpha[0] + alpha[1] * Psy + alpha[2] * Eta); };
 	//Вычисляем M для первого конечного элемента
 	for (int i = 0; i < 9; i++)
-		Mk[i] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, i, IndexFE));
+		MkXi[i] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, i, IndexFE));
 	for (int i = 1, p = 9; i < 9; i++)
 		for (int j = 0; j < i; j++, p++)
-			Mk[p] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, j, IndexFE));
+			MkXi[p] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, j, IndexFE));
+}
+void LocalCalcMKSig(int IndexFE) {
+	if (FECount == NULL || NodesCount == NULL)
+		throw "Ошибка: Нельзя посчитать локальную матрицу не зная область";
+	//Создаём функцию по которой интегрируем
+	function<double(double, double, tuple<int, int, int> Index)> IntegratedFunction = [](double Psy, double Eta, tuple<int, int, int> IndexFunc) { return RPsyEta(Psy, Eta, get<2>(IndexFunc)) * sigma(RPsyEta(Psy, Eta, get<2>(IndexFunc)), ZPsyEta(Psy, Eta, get<2>(IndexFunc))) * W[get<0>(IndexFunc)](Psy, Eta) * W[get<1>(IndexFunc)](Psy, Eta) * (alpha[0] + alpha[1] * Psy + alpha[2] * Eta); };
+	//Вычисляем M для первого конечного элемента
+	for (int i = 0; i < 9; i++)
+		MkSig[i] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, i, IndexFE));
+	for (int i = 1, p = 9; i < 9; i++)
+		for (int j = 0; j < i; j++, p++)
+			MkSig[p] = sign(alpha[0]) * Gauss2rod(IntegratedFunction, make_tuple(i, j, IndexFE));
 }
 void LocalCalcGK(int IndexFE) {
 	if (FECount == NULL || NodesCount == NULL)
@@ -755,62 +824,236 @@ void SumVector(double*& FirstVec, double* SecondVec, int n) {
 		FirstVec[i] += SecondVec[i];
 	}
 }
+void SubVector(double*& FirstVec, double* SecondVec, int n) {
+	for (int i = 0; i < n; i++) {
+		FirstVec[i] -= SecondVec[i];
+	}
+}
+void EqVector(double*& FirstVec, double* SecondVec, int n) {
+	for (int i = 0; i < n; i++) {
+		FirstVec[i] = SecondVec[i];
+	}
+}
+void MultMKVector(double*& FirstVec, double* SecVector, double * Mk) {
+	for (int i = 0; i < 9; i++) {
+		FirstVec[i] = Mk[i] * SecVector[i];
+	}
+	for (int i = 0, p = 9; i < 9; i++)
+		for (int j = 0; j < i; j++, p++) {
+			FirstVec[i] += Mk[p] * SecVector[j];
+			FirstVec[j] += Mk[p] * SecVector[i];
+		}
+}
 void MultVectorConstant(double*& FirstVec, double Constant, int n) {
 	for (int i = 0; i < n; i++) FirstVec[i] *= Constant;
 }
-void LocalCalcVectorFEK(int IndexFE) { // реализовано
+void LocalCalcVectorFEK(int IndexFE, double time) { // реализовано
 	if (FECount == NULL || NodesCount == NULL)
 		throw "Ошибка: Нельзя посчитать вектор правой части без заданной области";
 	//Создаём функцию по которой интегрируем
-	function<double(double, double, tuple<int, int, int>)> IntegretedFunc = [] (double Psy, double Eta, tuple<int, int, int> IndexFunc) { return RightFunction(RPsyEta(Psy, Eta, get<2>(IndexFunc)), ZPsyEta(Psy, Eta, get<2>(IndexFunc))) * RPsyEta(Psy, Eta, get<2>(IndexFunc)) * W[get<1>(IndexFunc)](Psy, Eta) * W[get<0>(IndexFunc)](Psy, Eta) * (alpha[0] + alpha[1] * Psy + alpha[2] * Eta); };
+	function<double(double, double, tuple<int, int, int>, double)> IntegretedFunc = [] (double Psy, double Eta, tuple<int, int, int> IndexFunc, double time) { return RightFunction(RPsyEta(Psy, Eta, get<2>(IndexFunc)), ZPsyEta(Psy, Eta, get<2>(IndexFunc)), time) * RPsyEta(Psy, Eta, get<2>(IndexFunc)) * W[get<1>(IndexFunc)](Psy, Eta) * W[get<0>(IndexFunc)](Psy, Eta) * (alpha[0] + alpha[1] * Psy + alpha[2] * Eta); };
 	for (int i = 0; i < 9; i++) bk[i] = 0.;
 	CalcVecAlpha(IndexFE);
 	for (int i = 0; i < 9; i++)
 		for (int j = 0; j < 9; j++)
-			bk[i] += sign(alpha[0]) * Gauss2rod(IntegretedFunc, make_tuple(i, j, IndexFE));
-
+			bk[i] += sign(alpha[0]) * Gauss2rod(IntegretedFunc, make_tuple(i, j, IndexFE), time);
 }
 
 void InitVectors() {
-	Mk = new double[45];
+	MkXi = new double[45];
+	MkSig = new double[45];
 	Gk = new double[45];
 	bk = new double[9];
 }
+static void Calc_deltat_3SCHEME(double*& Vector, int j) {
+	if (j < 2) {
+		throw "j < 2";
+	}
+	if (num_t < 2 || j >= num_t) {
+		throw "Wrong j";
+	}
+	Vector[0] = tj[j] - tj[j - 1];
+	Vector[1] = tj[j - 1] - tj[j - 2];
+	Vector[2] = tj[j] - tj[j - 2];
+}
 
-void GlobalA_F(bool debag) {
+void GetQpj(double *& FirstVec, int IndexFe, int mj) {
+	int index;
+	for (int i = 0; i < 9; i++) {
+		index = numfe[i][IndexFe];
+		FirstVec[i] = qj[mj][index];
+	}
+}
+void GetJLayer_3SCHEME(bool debag, int j) {
+	if (j < 2) {
+		throw "j < 2";
+	}
 	InitVectors();
+	double* TempM = new double[45];
+	double* deltat = new double[3];
+	Calc_deltat_3SCHEME(deltat, j);
+	double con1 = 2 / (deltat[2] * deltat[0]);
+	double con2 = 1 / deltat[0] + 1 / deltat[2];
+	double con3 = 2 / (deltat[1] * deltat[0]);
+	double con4 = 2 / (deltat[2] * deltat[1]);
+	double con5 = deltat[2] / (deltat[1] * deltat[0]);
+	double con6 = deltat[0] / (deltat[1] * deltat[2]);
+	double* qp1 = new double[9];
+	double* qp2 = new double[9];
 	for (int p = 0; p < FECount; p++)//проходим по всем КЭ
 	{
-			CalcVecAlpha(p);
-			CalcVecMyu(p);
-			LocalCalcGK(p);
-			LocalCalcMK(p);
-			if (debag) {
-				printf("Gk Mk до суммирования\nGk: ");
-				for (int i = 0; i < 45; i++)
-					printf("%f ", Gk[i]);
-				printf("\nMk: ");
-				for (int i = 0; i < 45; i++)
-					printf("%f ", Mk[i]);
-				printf("\n");
-			}
-			SumVector(Gk, Mk, 45);
-			if (debag) {
-				printf("Gk после суммирования\nGk: ");
-				for (int i = 0; i < 45; i++)
-					printf("%f ", Gk[i]);
-				printf("\n");
-			}
-			LocalCalcVectorFEK(p);
-			if (debag) {
-				printf("bk: ");
-				for (int i = 0; i < 9; i++)
-					printf("%f ", bk[i]);
-				printf("\n");
-			}
-			add_local_to_global(p);
+		CalcVecAlpha(p);
+		CalcVecMyu(p);
+		LocalCalcGK(p);
+		LocalCalcMKXi(p);
+		LocalCalcMKSig(p);
+		if (debag) {
+			printf("Gk Mk до суммирования\nGk: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", Gk[i]);
+			printf("\nMkXi: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", MkXi[i]);
+			printf("\nMkSig: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", MkSig[i]);
+			printf("\n");
+		}
+		EqVector(TempM, MkXi, 45);
+		MultVectorConstant(TempM, con1, 45);
+		SumVector(Gk, TempM, 45);
+		EqVector(TempM, MkSig, 45);
+		MultVectorConstant(TempM, con2, 45);
+		SumVector(Gk, TempM, 45);
+
+		if (debag) {
+			printf("Gk после суммирования\nGk: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", Gk[i]);
+			printf("\n");
+		}
+		LocalCalcVectorFEK(p, tj[j]);
+		GetQpj(qp1, p, 1);
+		MultVectorConstant(qp1, con3, 9);
+		GetQpj(qp2, p, 0);
+		MultVectorConstant(qp2, con4, 9);
+		SubVector(qp1, qp2, 9);
+		MultMKVector(qp2, qp1, MkXi);
+		SumVector(bk, qp2, 9);
+		GetQpj(qp1, p, 1);
+		MultVectorConstant(qp1, con5, 9);
+		GetQpj(qp2, p, 0);
+		MultVectorConstant(qp2, con6, 9);
+		SubVector(qp1, qp2, 9);
+		MultMKVector(qp2, qp1, MkSig);
+		SumVector(bk, qp2, 9);
+		if (debag) {
+			printf("bk: ");
+			for (int i = 0; i < 9; i++)
+				printf("%f ", bk[i]);
+			printf("\n");
+		}
+		add_local_to_global(p);
 	}
-	delete[] Mk; delete[] Gk; delete[] bk;
+	delete[] MkXi; delete[] MkSig; delete[] Gk; delete[] bk;
+}
+
+void Calc_deltat_4SCHEME(double*& Vector, int j) {
+	if (j < 3) {
+		throw "j < 3";
+	}
+	if (num_t < 3 || j >= num_t) {
+		throw "Wrong j";
+	}
+	Vector[0] = tj[j - 3] - tj[j - 2];
+	Vector[1] = tj[j - 3] - tj[j - 1];
+	Vector[2] = tj[j - 3] - tj[j];
+	Vector[3] = tj[j - 2] - tj[j - 1];
+	Vector[4] = tj[j - 2] - tj[j];
+	Vector[5] = tj[j - 1] - tj[j];
+}
+
+void GetJLayer_4SCHEME(bool debag, int j) {
+	if (j < 3) {
+		throw "j < 3";
+	}
+	InitVectors();
+	double* TempM = new double[45];
+	double* deltat = new double[6];
+	Calc_deltat_4SCHEME(deltat, j);
+	double con1 = deltat[4] * deltat[5]/(deltat[0] * deltat[1] * deltat[2]);
+	double con2 = -deltat[2] * deltat[5] / (deltat[0] * deltat[3] * deltat[4]);
+	double con3 = deltat[2]*deltat[4]/(deltat[1]*deltat[3]*deltat[5]);
+	double con4 = -(1 / deltat[2] + 1 / deltat[4] + 1 / deltat[5]);
+	double con5 = -2 * (deltat[4] + deltat[5]) / (deltat[0] * deltat[1] * deltat[2]);
+	double con6 = 2 * (deltat[2] + deltat[5]) / (deltat[0] * deltat[3] * deltat[4]);
+	double con7 = -2 * (deltat[2] + deltat[4]) / (deltat[1] * deltat[3] * deltat[5]);
+	double con8 = 2 * (deltat[2] + deltat[5] + deltat[4]) / (deltat[2] * deltat[4] * deltat[5]);
+	double* qp1 = new double[9];
+	double* qp2 = new double[9];
+	for (int p = 0; p < FECount; p++)//проходим по всем КЭ
+	{
+		CalcVecAlpha(p);
+		CalcVecMyu(p);
+		LocalCalcGK(p);
+		LocalCalcMKXi(p);
+		LocalCalcMKSig(p);
+		if (debag) {
+			printf("Gk Mk до суммирования\nGk: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", Gk[i]);
+			printf("\nMkXi: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", MkXi[i]);
+			printf("\nMkSig: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", MkSig[i]);
+			printf("\n");
+		}
+		EqVector(TempM, MkXi, 45);
+		MultVectorConstant(TempM, con8, 45);
+		SumVector(Gk, TempM, 45);
+		EqVector(TempM, MkSig, 45);
+		MultVectorConstant(TempM, con4, 45);
+		SumVector(Gk, TempM, 45);
+
+		if (debag) {
+			printf("Gk после суммирования\nGk: ");
+			for (int i = 0; i < 45; i++)
+				printf("%f ", Gk[i]);
+			printf("\n");
+		}
+		LocalCalcVectorFEK(p, tj[j]);
+		GetQpj(qp1, p, 1);
+		MultVectorConstant(qp1, con6, 9);
+		GetQpj(qp2, p, 0);
+		MultVectorConstant(qp2, con5, 9);
+		SumVector(qp1, qp2, 9);
+		GetQpj(qp2, p, 2);
+		MultVectorConstant(qp2, con7, 9);
+		SumVector(qp1, qp2, 9);
+		MultMKVector(qp2, qp1, MkXi);
+		SubVector(bk, qp2, 9);
+
+		GetQpj(qp1, p, 1);
+		MultVectorConstant(qp1, con2, 9);
+		GetQpj(qp2, p, 0);
+		MultVectorConstant(qp2, con1, 9);
+		SumVector(qp1, qp2, 9);
+		GetQpj(qp2, p, 2);
+		MultVectorConstant(qp2, con3, 9);
+		SumVector(qp1, qp2, 9);
+		MultMKVector(qp2, qp1, MkSig);
+		SubVector(bk, qp2, 9);
+		if (debag) {
+			printf("bk: ");
+			for (int i = 0; i < 9; i++)
+				printf("%f ", bk[i]);
+			printf("\n");
+		}
+		add_local_to_global(p);
+	}
+	delete[] MkXi; delete[] MkSig; delete[] Gk; delete[] bk;
 }
 
 #pragma endregion
@@ -962,14 +1205,31 @@ void LU_sq_MSG(vector<double>& x, vector<double>& r, vector<double>& z, vector<d
 	resid = CulcResid(r, norma_f, n);
 	cout << "End resid: " << resid << endl;
 }
+
+void ClearVectorsLU() {
+	ggl.resize(ig[NodesCount]);
+	di.resize(NodesCount);
+	b.resize(NodesCount);
+	L_sq.resize(ig[NodesCount]);
+	di_sq.resize(NodesCount);
+	for (int i = 0; i < ig[NodesCount]; i++) {
+		ggl[i] = 0.0;
+		L_sq[i] = 0.0;
+	}
+	for (int i = 0; i < NodesCount; i++) {
+		di[i] = 0.0;
+		b[i] = 0.0;
+		di_sq[i] = 0.0;
+	}
+}
 #pragma endregion
 #pragma endregion
 #pragma region Тестирование
-void Test(vector<double> q) {
+void Test(vector<double> q, int layer) {
 	vector<double> q_u(NodesCount, 0);
 	for (int i = 0, p = 0; i < NodesCountR; i++) {
 		for (int j = 0; j < NodesCountR; j++, p++) {
-			q_u[p] = ug(0, rz[0][p], rz[1][p]);
+			q_u[p] = ug(0, rz[0][p], rz[1][p], tj[layer]);
 		}
 	}
 	
@@ -979,7 +1239,7 @@ void Test(vector<double> q) {
 		norm_vec_q_u += (q_u[i]) * (q_u[i]);
 	}
 	cout << endl;
-	cout << "Относительная норма вектора погрешности полученного решения:" << endl;
+	cout << "Относительная норма вектора погрешности полученного решения на слое " << layer + 1 << " при t = " << tj[layer] << " равна: " << endl;
 	cout << sqrt(norm_vec_err) / sqrt(norm_vec_q_u) << endl;
 	cout.precision(15);
 	/*
@@ -995,19 +1255,36 @@ int main()
 	InitBaseFunction();
 	InitDРerivativeBaseFunction();
 	LoadNet();
+	LoadTNet();
+	InitQJ();
+	InitFirstQ();
 	BoundCondit();
 	BuildBoundMatrices();
 	GeneratePortrait();
-	GlobalA_F();
-	ConsiderBoundCondit();
+	GetJLayer_3SCHEME(false, 2);
+	ConsiderBoundCondit(tj[2]);
+	int max_iter = 1000;
+	double eps = 1e-15;
 	vector<double> r(NodesCount);
 	vector<double> z(NodesCount);
 	vector<double> Mult(NodesCount);
 	vector<double> Az(NodesCount);
 	vector<double> q(NodesCount, 0);
-	int max_iter = 1000;
-	double eps = 1e-15;
 	LU_sq_MSG(q, r, z, Az, Mult, NodesCount, eps, max_iter);
-	Test(q);
+	qj[2] = q;
+	Test(q, 2);
+	for (int j = 3; j < num_t; j++) {
+		ClearVectorsLU();
+		GetJLayer_4SCHEME(false, j);
+		ConsiderBoundCondit(tj[j]);
+		vector<double> r(NodesCount);
+		vector<double> z(NodesCount);
+		vector<double> Mult(NodesCount);
+		vector<double> Az(NodesCount);
+		vector<double> q(NodesCount, 0);
+		LU_sq_MSG(q, r, z, Az, Mult, NodesCount, eps, max_iter);
+		qj[0] = qj[1]; qj[1] = qj[2]; qj[2] = q;
+		Test(q, j);
+	}
 	return 0;
 }
